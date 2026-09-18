@@ -1,0 +1,23 @@
+# Node dependencies
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Python & Virtualenv
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+backend/__pycache__/
+backend/app/__pycache__/
+
+# Database & Data
+data/*.db
+data/network_security.db
+
+# IDE & OS
+.DS_Store
+.vscode/
+.idea/
+*.log
