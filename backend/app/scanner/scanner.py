@@ -1,3 +1,4 @@
+import os
 import re
 import socket
 import ssl
@@ -8,6 +9,35 @@ import urllib.parse
 from datetime import datetime
 from app.risk_engine.risk import evaluate_port_risk_and_exposure
 from app.findings_engine.findings import generate_findings_for_scan
+from app.services.nmap_parser import parse_nmap_xml
+
+def find_nmap_executable() -> str:
+    """
+    Locates the Nmap executable path.
+    1. Checks system PATH.
+    2. Checks C:\\Program Files (x86)\\Nmap\\nmap.exe
+    3. Checks C:\\Program Files\\Nmap\\nmap.exe
+    Prints diagnostic log on detection.
+    """
+    nmap_path = shutil.which("nmap")
+    if nmap_path and os.path.isfile(nmap_path):
+        print(f"Nmap executable detected:\n{nmap_path}")
+        return nmap_path
+
+    candidate_paths = [
+        r"C:\Program Files (x86)\Nmap\nmap.exe",
+        r"C:\Program Files\Nmap\nmap.exe",
+    ]
+
+    for candidate in candidate_paths:
+        if os.path.isfile(candidate):
+            print(f"Nmap executable detected:\n{candidate}")
+            return candidate
+
+    return None
+
+# Detected executable path configuration
+NMAP_EXE_PATH = find_nmap_executable()
 
 def sanitize_and_parse_target(raw_input: str) -> dict:
     """
@@ -107,119 +137,53 @@ def get_demo_scan_data(target_info: dict) -> dict:
         "findings": findings_list
     }
 
-def run_live_scan(target_ip: str) -> dict:
+def run_live_scan(target_ip: str, scan_mode: str = "service") -> dict:
     """
-    Performs safe, non-destructive network exposure check.
-    Uses Nmap if installed; falls back to standard Python socket discovery if Nmap is absent.
-    """
-    start_time = time.time()
-    nmap_path = shutil.which("nmap")
+    Performs safe, non-destructive network exposure scan by directly executing the Nmap binary.
+    Captures XML output from stdout (-oX -) and parses all open ports without artificial limits.
     
-    ports_raw = []
+    Scan Modes:
+      - 'quick': Quick Scan (nmap -oX - <target>)
+      - 'service': Service Detection (nmap -sV -oX - <target>)
+      - 'full_tcp': Full TCP Port Scan (nmap -p- -oX - <target>)
+      - 'full_tcp_service': Full TCP + Service Detection (nmap -p- -sV -oX - <target>)
+    """
+    nmap_path = find_nmap_executable()
+    if not nmap_path:
+        raise RuntimeError("Nmap is not installed or is not available in PATH.")
 
-    if nmap_path:
-        try:
-            # Safe nmap execution using argument list (no shell injection risk)
-            cmd = [nmap_path, "-sV", "--top-ports", "50", "-T3", target_ip]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=45, shell=False)
-            
-            if result.returncode == 0:
-                stdout = result.stdout
-                # Parse nmap text output lines
-                # Format: PORT STATE SERVICE VERSION
-                for line in stdout.splitlines():
-                    match = re.match(r"^(\d+)/(tcp|udp)\s+(open|filtered|closed)\s+(\S+)\s*(.*)$", line.strip())
-                    if match:
-                        port_num = int(match.group(1))
-                        proto = match.group(2).upper()
-                        state = match.group(3).upper()
-                        service = match.group(4)
-                        ver = match.group(5).strip() or "Detected Version"
-                        
-                        if state in ["OPEN", "FILTERED"]:
-                            ports_raw.append({
-                                "port": port_num,
-                                "protocol": proto,
-                                "state": state,
-                                "service": service,
-                                "version": ver
-                            })
-        except Exception:
-            ports_raw = []
+    # Predefined scan modes mapping to safe Nmap command arguments
+    if scan_mode == "quick":
+        cmd = [nmap_path, "-oX", "-", target_ip]
+    elif scan_mode == "full_tcp":
+        cmd = [nmap_path, "-p-", "-oX", "-", target_ip]
+    elif scan_mode == "full_tcp_service":
+        cmd = [nmap_path, "-p-", "-sV", "-oX", "-", target_ip]
+    else:  # default 'service' mode
+        cmd = [nmap_path, "-sV", "-oX", "-", target_ip]
 
-    # Fallback to Python Socket Scan if Nmap failed or was not installed or returned no open ports
-    if not ports_raw:
-        # Standard safety assessment ports
-        common_ports = [
-            (22, "SSH"), (53, "DNS"), (80, "HTTP"), (443, "HTTPS"), (3389, "RDP"),
-            (21, "FTP"), (23, "TELNET"), (25, "SMTP"), (445, "SMB"), (3306, "MySQL"), (5432, "PostgreSQL")
-        ]
+    start_time = time.time()
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=300, shell=False)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Nmap scan timed out. The target may be filtering probe packets or unreachable.")
+    except Exception as err:
+        raise RuntimeError(f"Nmap scan execution failed: {str(err)}")
 
-        for port_num, default_svc in common_ports:
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(0.6)
-                res = s.connect_ex((target_ip, port_num))
-                if res == 0:
-                    banner = "Detected Version"
-                    # Simple HTTP/HTTPS banner/version check
-                    if port_num == 443:
-                        try:
-                            context = ssl.create_default_context()
-                            context.check_hostname = False
-                            context.verify_mode = ssl.CERT_NONE
-                            with context.wrap_socket(s, server_hostname=target_ip) as ss:
-                                cert = ss.getpeercert(True)
-                                banner = "TLS 1.2/1.3 Active Endpoint"
-                        except Exception:
-                            banner = "HTTPS TLS Endpoint"
-                    elif port_num == 80:
-                        try:
-                            s.sendall(b"HEAD / HTTP/1.0\r\nHost: " + target_ip.encode() + b"\r\n\r\n")
-                            reply = s.recv(128).decode("utf-8", errors="ignore")
-                            if "Server:" in reply:
-                                banner = reply.split("Server:")[1].split("\r\n")[0].strip()
-                        except Exception:
-                            banner = "HTTP Web Service"
-                    s.close()
-                    ports_raw.append({
-                        "port": port_num,
-                        "protocol": "TCP",
-                        "state": "OPEN",
-                        "service": default_svc,
-                        "version": banner
-                    })
-                else:
-                    s.close()
-            except Exception:
-                pass
+    if result.returncode != 0 and not result.stdout:
+        err_msg = result.stderr.decode("utf-8", errors="ignore").strip() if result.stderr else "Nmap process returned non-zero status."
+        raise RuntimeError(f"Nmap execution error: {err_msg}")
 
-    response_time_ms = round((time.time() - start_time) * 1000, 2)
+    # Parse XML output from stdout
+    try:
+        parsed_data = parse_nmap_xml(result.stdout)
+    except ValueError as val_err:
+        raise RuntimeError(f"Failed to parse Nmap output: {str(val_err)}")
 
-    # Evaluate ports and generate findings
-    ports_evaluated = []
-    for p in ports_raw:
-        eval_res = evaluate_port_risk_and_exposure(p["port"], p["service"], p["state"], p["version"])
-        ports_evaluated.append({
-            "port_number": p["port"],
-            "protocol": p["protocol"],
-            "state": p["state"],
-            "service_name": p["service"],
-            "detected_version": p["version"],
-            "risk_level": eval_res["risk_level"],
-            "exposure_category": eval_res["exposure_category"],
-            "finding_summary": eval_res["finding_summary"],
-            "why_it_matters": eval_res["why_it_matters"],
-            "weakness": eval_res["weakness"],
-            "recommendation": eval_res["recommendation"]
-        })
+    elapsed_ms = round((time.time() - start_time) * 1000, 2)
+    parsed_data["response_time_ms"] = elapsed_ms
+    parsed_data["target_ip"] = target_ip
 
-    findings_list = generate_findings_for_scan(ports_evaluated)
+    return parsed_data
 
-    return {
-        "status": "Completed" if ports_evaluated else "Completed (No Open Ports Detected)",
-        "response_time_ms": response_time_ms,
-        "total_hosts": 1,
-        "ports": ports_evaluated,
-        "findings": findings_list
-    }
+

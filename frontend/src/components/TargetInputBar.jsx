@@ -1,19 +1,21 @@
 import React, { useState } from 'react';
-import { Play, RotateCcw, Download, Sparkles, Search } from 'lucide-react';
+import { Play, RotateCcw, Download, Sparkles, Search, Sliders } from 'lucide-react';
 
 export default function TargetInputBar({
   onStartScan,
   onClear,
   onLoadDemo,
   onExportReport,
-  isScanning
+  isScanning,
+  onError
 }) {
   const [targetInput, setTargetInput] = useState('192.168.1.20');
+  const [scanMode, setScanMode] = useState('service');
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (targetInput.strip?.() !== '' && !isScanning) {
-      onStartScan(targetInput, false);
+    if (targetInput && targetInput.trim() !== '' && !isScanning) {
+      onStartScan(targetInput, false, scanMode);
     }
   };
 
@@ -40,16 +42,35 @@ export default function TargetInputBar({
           />
         </div>
 
+        {/* Scan Mode Dropdown */}
+        <div className="flex items-center gap-2 bg-slate-900/90 border border-slate-700/80 rounded-lg px-3 py-1">
+          <Sliders className="w-4 h-4 text-cyan-400 shrink-0" />
+          <div className="flex flex-col text-[10px]">
+            <span className="text-slate-400 font-bold uppercase tracking-wider">SCAN MODE</span>
+            <select
+              value={scanMode}
+              onChange={(e) => setScanMode(e.target.value)}
+              disabled={isScanning}
+              className="bg-transparent text-slate-200 font-mono text-xs focus:outline-none cursor-pointer"
+            >
+              <option value="service" className="bg-slate-900 text-slate-100">Service Detection (nmap -sV)</option>
+              <option value="quick" className="bg-slate-900 text-slate-100">Quick Scan (nmap)</option>
+              <option value="full_tcp" className="bg-slate-900 text-slate-100">Full TCP Scan (nmap -p-)</option>
+              <option value="full_tcp_service" className="bg-slate-900 text-slate-100">Full TCP + Service (nmap -p- -sV)</option>
+            </select>
+          </div>
+        </div>
+
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
           {/* Start Scan */}
           <button
             type="submit"
             disabled={isScanning || !targetInput.trim()}
-            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:opacity-50 text-white font-semibold text-xs rounded-lg shadow-md shadow-cyan-950 transition-all cursor-pointer"
+            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:opacity-50 text-white font-semibold text-xs rounded-lg shadow-md shadow-cyan-950 transition-all cursor-pointer font-mono"
           >
             <Play className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
-            <span>{isScanning ? 'SCANNING...' : 'START SCAN'}</span>
+            <span>{isScanning ? 'RUNNING NMAP SCAN...' : 'START NMAP SCAN'}</span>
           </button>
 
           {/* Clear */}

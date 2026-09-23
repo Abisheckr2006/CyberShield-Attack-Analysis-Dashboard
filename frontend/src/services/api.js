@@ -2,8 +2,17 @@ import axios from 'axios';
 
 const API_BASE_URL = '/api';
 
-export const triggerScan = async (target, isDemo = false) => {
-  const response = await axios.post(`${API_BASE_URL}/scan`, { target, is_demo: isDemo });
+export const triggerScan = async (target, isDemo = false, scanMode = 'service') => {
+  const response = await axios.post(`${API_BASE_URL}/scan`, { target, is_demo: isDemo, scan_mode: scanMode });
+  return response.data;
+};
+
+export const importNmapXml = async (file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await axios.post(`${API_BASE_URL}/nmap/import`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  });
   return response.data;
 };
 

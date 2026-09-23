@@ -19,7 +19,9 @@ export default function DashboardPage({
   onClear,
   onLoadDemo,
   onExportReport,
-  onLoadScanFromHistory
+  onLoadScanFromHistory,
+  onImportSuccess,
+  onError
 }) {
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -30,6 +32,8 @@ export default function DashboardPage({
         onLoadDemo={onLoadDemo}
         onExportReport={onExportReport}
         isScanning={isScanning}
+        onImportSuccess={onImportSuccess}
+        onError={onError}
       />
 
       {/* View Switching */}

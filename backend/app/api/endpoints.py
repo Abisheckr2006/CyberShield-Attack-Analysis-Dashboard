@@ -1,5 +1,5 @@
 import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -12,6 +12,7 @@ from app.schemas.schemas import (
 from app.scanner.scanner import sanitize_and_parse_target, get_demo_scan_data, run_live_scan
 from app.services.report_generator import generate_json_report, generate_csv_report, generate_pdf_report
 from app.services.level2_scenario import get_level2_scenario_data
+from app.services.nmap_parser import parse_nmap_xml
 
 router = APIRouter(prefix="/api", tags=["Network Security Exposure API"])
 
@@ -97,7 +98,8 @@ def trigger_scan(req: ScanCreateRequest, db: Session = Depends(get_db)):
         if req.is_demo:
             scan_results = get_demo_scan_data(target_parsed)
         else:
-            scan_results = run_live_scan(target_parsed["ip"])
+            scan_mode = req.scan_mode or "service"
+            scan_results = run_live_scan(target_parsed["ip"], scan_mode=scan_mode)
 
         db_scan.status = scan_results["status"]
         db_scan.response_time_ms = scan_results["response_time_ms"]
@@ -143,10 +145,96 @@ def trigger_scan(req: ScanCreateRequest, db: Session = Depends(get_db)):
         db.refresh(db_scan)
         return db_scan
 
+    except RuntimeError as err:
+        db_scan.status = "Failed"
+        db.commit()
+        raise HTTPException(status_code=400, detail=str(err))
     except Exception as e:
         db_scan.status = "Failed"
         db.commit()
         raise HTTPException(status_code=500, detail=f"Scan execution failed: {str(e)}")
+
+
+@router.post("/nmap/import", response_model=ScanResponse)
+async def import_nmap_xml_report(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Imports and parses an authorized Nmap XML scan report.
+    Does NOT launch or execute active network scans.
+    """
+    if not file.filename or not file.filename.lower().endswith(".xml"):
+        raise HTTPException(status_code=400, detail="Invalid Nmap XML report.")
+
+    try:
+        contents = await file.read()
+        parsed_data = parse_nmap_xml(contents)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid Nmap XML report.")
+
+    # Create target entity
+    db_target = Target(
+        raw_input=parsed_data["target_input"],
+        ip=parsed_data["target_ip"],
+        hostname=parsed_data["target_hostname"],
+        domain=parsed_data["target_domain"]
+    )
+    db.add(db_target)
+    db.commit()
+    db.refresh(db_target)
+
+    # Create scan entity
+    db_scan = Scan(
+        target_id=db_target.id,
+        status=parsed_data["status"],
+        started_at=datetime.datetime.utcnow(),
+        completed_at=datetime.datetime.utcnow(),
+        response_time_ms=parsed_data["response_time_ms"],
+        total_hosts=parsed_data["total_hosts"],
+        is_demo=0
+    )
+    db.add(db_scan)
+    db.commit()
+    db.refresh(db_scan)
+
+    # Persist ports
+    for p in parsed_data["ports"]:
+        db_port = Port(
+            scan_id=db_scan.id,
+            port_number=p["port_number"],
+            protocol=p["protocol"],
+            state=p["state"],
+            service_name=p["service_name"],
+            detected_version=p["detected_version"],
+            risk_level=p["risk_level"],
+            exposure_category=p["exposure_category"],
+            finding_summary=p["finding_summary"],
+            why_it_matters=p["why_it_matters"],
+            weakness=p["weakness"],
+            recommendation=p["recommendation"]
+        )
+        db.add(db_port)
+
+    # Persist findings
+    for f in parsed_data["findings"]:
+        db_finding = Finding(
+            scan_id=db_scan.id,
+            finding_code=f["finding_code"],
+            severity=f["severity"],
+            affected_port=f.get("affected_port"),
+            service_name=f.get("service_name"),
+            title=f["title"],
+            description=f["description"],
+            evidence=f["evidence"],
+            impact=f["impact"],
+            recommendation=f["recommendation"],
+            confidence=f.get("confidence", "HIGH")
+        )
+        db.add(db_finding)
+
+    db.commit()
+    db.refresh(db_scan)
+    return db_scan
 
 
 @router.get("/scan/{scan_id}", response_model=ScanResponse)

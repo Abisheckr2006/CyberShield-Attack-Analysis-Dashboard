@@ -7,7 +7,7 @@ def evaluate_port_risk_and_exposure(port: int, service_name: str, state: str, ve
     
     # Defaults
     risk_level = "LOW"
-    exposure = "Unknown"
+    exposure = "Internal"
     summary = f"Port {port} ({service_name}) is reachable."
     why_it_matters = "Open network ports increase attack surface if unneeded services are exposed."
     weakness = "Service accessibility beyond authorized boundaries."

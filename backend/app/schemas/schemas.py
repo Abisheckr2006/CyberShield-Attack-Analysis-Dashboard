@@ -69,6 +69,7 @@ class ScanResponse(BaseModel):
 class ScanCreateRequest(BaseModel):
     target: str
     is_demo: bool = False
+    scan_mode: Optional[str] = "service"
 
 class SummaryMetrics(BaseModel):
     total_hosts: int
